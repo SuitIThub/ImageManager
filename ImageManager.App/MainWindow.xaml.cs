@@ -23,6 +23,7 @@ public partial class MainWindow : Window
         var trackingStore = new TrackingStore();
         var folderDialogs = new FolderDialogService();
         var conflictPrompt = new ConflictPromptService();
+        var updateService = new ApplicationUpdateService();
         _viewModel = new MainWindowViewModel(
             configStore,
             trackingStore,
@@ -34,7 +35,8 @@ public partial class MainWindow : Window
             new AuditService(),
             new CountsService(),
             new PurgeService(),
-            folderDialogs);
+            folderDialogs,
+            updateService);
         DataContext = _viewModel;
         Loaded += async (_, _) => await _viewModel.InitializeAsync();
 

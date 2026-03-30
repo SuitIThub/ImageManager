@@ -1,6 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Globalization;
+using System.Windows;
+using WpfApplication = System.Windows.Application;
+using WpfMessageBox = System.Windows.MessageBox;
 using ImageManager.App.Services;
 using ImageManager.Core.Interfaces;
 using ImageManager.Core.Models;
@@ -20,6 +24,7 @@ public sealed class MainWindowViewModel : ObservableObject
     private readonly ICountsService _countsService;
     private readonly IPurgeService _purgeService;
     private readonly FolderDialogService _folderDialogs;
+    private readonly ApplicationUpdateService _updateService;
 
     private string _statusText = "Ready.";
     private LibraryConfig _config = new();
@@ -47,7 +52,8 @@ public sealed class MainWindowViewModel : ObservableObject
         IAuditService auditService,
         ICountsService countsService,
         IPurgeService purgeService,
-        FolderDialogService folderDialogs)
+        FolderDialogService folderDialogs,
+        ApplicationUpdateService updateService)
     {
         _configStore = configStore;
         _trackingStore = trackingStore;
@@ -60,6 +66,7 @@ public sealed class MainWindowViewModel : ObservableObject
         _countsService = countsService;
         _purgeService = purgeService;
         _folderDialogs = folderDialogs;
+        _updateService = updateService;
 
         RunScanCommand = new RelayCommand(async () => await RunScanAsync());
         RunBackupCommand = new RelayCommand(async () => await RunBackupAsync(currentVersionOnly: false));
@@ -85,6 +92,7 @@ public sealed class MainWindowViewModel : ObservableObject
         LoadCountsCommand = new RelayCommand(async () => await LoadCountsAsync());
         LoadConfigCommand = new RelayCommand(async () => await LoadConfigAsync());
         SaveConfigCommand = new RelayCommand(async () => await SaveConfigAsync());
+        CheckForUpdatesCommand = new RelayCommand(() => _ = CheckForUpdatesAsync());
         ApplyExtensionsCommand = new RelayCommand(ApplyExtensions);
         ApplyRulesCommand = new RelayCommand(ApplyRules);
         ApplyTreeSelectionCommand = new RelayCommand(async () => await ApplyTreeSelectionAsync());
@@ -163,6 +171,7 @@ public sealed class MainWindowViewModel : ObservableObject
     public RelayCommand LoadCountsCommand { get; }
     public RelayCommand LoadConfigCommand { get; }
     public RelayCommand SaveConfigCommand { get; }
+    public RelayCommand CheckForUpdatesCommand { get; }
     public RelayCommand BrowseMainRootCommand { get; }
     public RelayCommand BrowseAddMainRootCommand { get; }
     public RelayCommand BrowseStageRootCommand { get; }
@@ -257,6 +266,7 @@ public sealed class MainWindowViewModel : ObservableObject
         await LoadTreeFromTrackingAsync();
         await LoadStageTreeAsync();
         await LoadBackupTreesAsync();
+        await MaybeOfferUpdateOnStartupAsync();
     }
 
     private async Task LoadConfigAsync()
@@ -283,6 +293,105 @@ public sealed class MainWindowViewModel : ObservableObject
     {
         await _configStore.SaveAsync(Config);
         StatusText = "Configuration saved.";
+    }
+
+    private async Task MaybeOfferUpdateOnStartupAsync()
+    {
+        if (Debugger.IsAttached)
+        {
+            return;
+        }
+
+        await OfferUpdateIfAvailableAsync(silentWhenUpToDate: true);
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        await OfferUpdateIfAvailableAsync(silentWhenUpToDate: false);
+    }
+
+    private async Task OfferUpdateIfAvailableAsync(bool silentWhenUpToDate)
+    {
+        try
+        {
+            var current = ApplicationUpdateService.GetCurrentVersion();
+            StatusText = "Checking for updates…";
+            var offer = await _updateService.GetBestNewerReleaseAsync(current).ConfigureAwait(true);
+            if (offer is null)
+            {
+                StatusText = silentWhenUpToDate ? "Ready." : "You are running the latest release.";
+                if (!silentWhenUpToDate)
+                {
+                    var label = ApplicationUpdateService.ToVersionLabel(current);
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                        WpfMessageBox.Show(
+                            $"You are running the latest release ({label}).",
+                            "Update",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information));
+                }
+
+                return;
+            }
+
+            var want = await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                WpfMessageBox.Show(
+                    $"A newer version is available: {offer.VersionLabel} (installed: {ApplicationUpdateService.ToVersionLabel(current)}).\n\nDownload and install now? The application will close and restart after the update.",
+                    "Update available",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question) == MessageBoxResult.Yes);
+
+            if (!want)
+            {
+                StatusText = "Ready.";
+                return;
+            }
+
+            await DownloadAndApplyAsync(offer);
+        }
+        catch (Exception ex)
+        {
+            StatusText = "Ready.";
+            if (!silentWhenUpToDate)
+            {
+                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                    WpfMessageBox.Show($"Update check failed: {ex.Message}", "Update", MessageBoxButton.OK, MessageBoxImage.Warning));
+            }
+        }
+    }
+
+    private async Task DownloadAndApplyAsync(UpdateOffer offer)
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"ImageManager-update-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        var zip = Path.Combine(temp, "update.zip");
+        var extract = Path.Combine(temp, "extract");
+
+        try
+        {
+            var progress = new Progress<string>(s => StatusText = s);
+            await _updateService.DownloadUpdatePackageAsync(offer, zip, progress).ConfigureAwait(true);
+            StatusText = "Extracting update…";
+            await Task.Run(() => _updateService.ExtractZip(zip, extract)).ConfigureAwait(true);
+
+            var installDir = ApplicationUpdateService.GetInstallDirectory();
+            var exePath = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exePath))
+            {
+                exePath = Path.Combine(installDir, "ImageManager.App.exe");
+            }
+
+            var script = _updateService.WriteApplyScriptAndGetPath(extract, installDir, exePath);
+            _updateService.StartApplyScript(script);
+            StatusText = "Closing to apply update…";
+            await WpfApplication.Current.Dispatcher.InvokeAsync(() => WpfApplication.Current.Shutdown(0));
+        }
+        catch (Exception ex)
+        {
+            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                WpfMessageBox.Show($"Update failed: {ex.Message}", "Update", MessageBoxButton.OK, MessageBoxImage.Error));
+            StatusText = "Ready.";
+        }
     }
 
     private async Task RunScanAsync()

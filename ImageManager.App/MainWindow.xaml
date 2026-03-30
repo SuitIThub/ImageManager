@@ -208,6 +208,7 @@
                     <Button Margin="6,0,0,0" Padding="10,4" Content="Backup" Command="{Binding RunBackupCommand}" />
                     <Button Margin="6,0,0,0" Padding="10,4" Content="Purge Staging" Command="{Binding PurgeStageCommand}" />
                     <Button Margin="6,0,0,0" Padding="10,4" Content="Load Counts" Command="{Binding LoadCountsCommand}" />
+                    <Button Margin="6,0,0,0" Padding="10,4" Content="Check for updates" Command="{Binding CheckForUpdatesCommand}" />
                 </StackPanel>
             </DockPanel>
         </Border>
