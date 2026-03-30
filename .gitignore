@@ -1,0 +1,21 @@
+# Build output
+**/bin/
+**/obj/
+
+# User-specific files
+*.user
+*.rsuser
+*.suo
+
+# IDE folders
+.vs/
+.vscode/
+
+# Test and coverage output
+TestResults/
+*.coverage
+*.coveragexml
+
+# NuGet local artifacts
+*.nupkg
+*.snupkg
